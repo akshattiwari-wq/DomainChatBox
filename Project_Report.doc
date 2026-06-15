@@ -1,0 +1,169 @@
+Document Chat Assistant — Project Report
+
+1. Project Overview
+
+This project implements a document-aware persistent chat assistant. Users upload documents (PDF, Word, CSV, text), the server extracts and stores text and numeric data, splits document text into chunks, generates embeddings, and stores chunks in SQLite. Users can ask natural-language questions; the system retrieves relevant chunks, optionally calls OpenAI Chat to produce answers, and maintains a persistent chat history.
+
+2. Tech Stack
+
+- Backend: Node.js (ES modules), Express, multer, sqlite, pdf-parse, mammoth, csv-parse
+- Frontend: React, Vite
+- LLM/Embeddings: OpenAI (via openai npm client) — optional; system falls back to extractive answers when API key is absent
+- Storage: SQLite (file-based DB)
+- Language: JavaScript (modern ES modules)
+
+3. Architecture (high level)
+
+- Frontend (React): UI to upload files, view uploaded files, chat box for messages.
+- Backend (Express): Routes:
+  - `/api/upload` — receives files, parses them, chunks text, generates embeddings, saves documents and chunks
+  - `/api/query` — accepts question, retrieves relevant chunks, calls LLM or extractive answerer, stores chat history
+  - `/api/files` — list/delete uploaded files and status
+- Services:
+  - Document parsing (`documentParser.js`) — handles pdf/docx/csv/text extraction
+  - Retrieval (`retrievalService.js`) — chunking, sparse term-vector matching, optional dense embedding cosine similarity
+  - Embedding (`embeddingService.js`) — OpenAI embeddings wrapper
+  - LLM service (`llmService.js`) — orchestrates retrieval + answer generation (OpenAI chat or extractive fallback)
+  - Structured answerer (`structuredAnswerService.js`) — handles CSV-like queries with filters and aggregates
+
+4. Database Schema
+
+- `documents` table: id, filename, mimetype, size_bytes, content, metadata, numeric_data, uploaded_at
+- `document_chunks` table: id, document_id (FK), chunk_index, content, embedding_json, created_at
+- `chats` table: id, role, message, created_at
+
+(See [backend/src/db.js](backend/src/db.js#L1-L200))
+
+5. Setup & Run Instructions (step-by-step)
+
+Prerequisites:
+- Node.js 18+ and npm
+- (Optional) OpenAI API key (set `OPENAI_API_KEY` in `.env` for better answers and embeddings)
+
+Backend (server):
+1. Open a terminal in [backend](backend#L1).
+2. Install dependencies:
+
+    npm install
+
+3. Create `.env` in backend with values (example):
+
+    PORT=4000
+    OPENAI_API_KEY=sk-...
+    OPENAI_MODEL=gpt-4.1-mini
+    OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+
+4. Start server (development):
+
+    npm run dev
+
+5. Server will initialize the SQLite database at `backend/data/app.db` automatically (see `initDb()` in [backend/src/db.js](backend/src/db.js#L1-L200)).
+
+Frontend (client):
+1. Open a terminal in [frontend](frontend#L1).
+2. Install dependencies:
+
+    npm install
+
+3. Start dev server:
+
+    npm run dev
+
+4. Open the app at the Vite-provided URL (usually http://localhost:5173). The frontend talks to the backend via relative paths (`/api/...`). If backend runs on a different origin, update `vite` proxy or use CORS.
+
+6. Request/Processing Flow (detailed)
+
+A. Upload flow:
+- Frontend `FileUpload.jsx` builds `FormData` and POSTs to `/api/upload`.
+- Backend `upload` route uses `multer` memory storage to read files.
+- `parseDocument(file)` extracts text, metadata, numeric data depending on file type (PDF via `pdf-parse`, Word via `mammoth`, CSV via `csv-parse`). (See [backend/src/services/documentParser.js](backend/src/services/documentParser.js#L1-L200)).
+- Text is normalized and stored in `documents.content` and numeric/metadata stored in `metadata` or `numeric_data` JSON columns.
+- `retrievalService.chunkDocument(text)` splits large text into chunks (~1600 chars) and produces sparse term vectors as fallback embeddings.
+- `embeddingService.generateEmbeddings(chunkTextInputs)` calls OpenAI embeddings; when available, embedding JSON is stored in `document_chunks.embedding_json`.
+- Database updates are wrapped in a transaction.
+
+B. Query flow:
+- Frontend `ChatBox.jsx` sends `POST /api/query` with `{ question }`.
+- Backend `query` route loads `documents` and `document_chunks`, calls `llmService.answerQuestion(question, docs, chunks)`.
+- `llmService` first attempts structured answers (CSV/table-like queries) via `structuredAnswerService`.
+- If not structured, it runs retrieval: `selectRelevantChunks(question, chunks)` which uses sparse term-vector overlap and (if available) dense embeddings cosine similarity.
+- If relevant chunks are found and OpenAI key is present, the system calls `client.chat.completions.create` to generate an answer constrained to the provided context. If no OpenAI key, a local extractive answer is built using sentence scoring.
+- Both user query and assistant answer are persisted into `chats` table for history.
+
+7. Key Code Snippets and Explanations
+
+A. Server startup (simplified):
+
+import express from 'express';
+import uploadRouter from './routes/upload.js';
+
+const app = express();
+app.use(express.json());
+await initDb();
+app.use('/api/upload', uploadRouter);
+app.listen(PORT);
+
+Explanation: initializes Express, ensures DB initialized, mounts routers, starts listening.
+(Refer: [backend/src/server.js](backend/src/server.js#L1-L120))
+
+B. Parse & store file (upload route core):
+
+const parsed = await parseDocument(file);
+const chunks = chunkDocument(parsed.text);
+const embeddingResults = await generateEmbeddings(chunks.map(c => c.content));
+
+// insert document row, then insert each chunk with embedding
+
+Explanation: The server first extracts text and numeric data, then chunks text and requests embeddings for each chunk. If embeddings fail, the chunk objects contain fallback sparse vectors.
+(Refer: [backend/src/routes/upload.js](backend/src/routes/upload.js#L1-L200))
+
+C. Chunking strategy (retrievalService.chunkDocument):
+
+- Splits by paragraphs and re-groups into chunks under ~1600 chars.
+- Produces a sparse term-frequency vector using `toTermVector(text)` for fast overlap scoring.
+- When OpenAI embeddings are available, they are stored as dense arrays.
+
+D. Retrieval & ranking
+
+- `selectRelevantChunks(question, chunks)` forms a question term vector and optionally a dense question embedding.
+- Computes three signals: token overlap ratio, sparse cosine similarity, dense cosine similarity (if dense embeddings available), then ranks chunks by combined score.
+- Returns top matches and a boolean `isRelevant` using thresholds.
+(Refer: [backend/src/services/retrievalService.js](backend/src/services/retrievalService.js#L1-L300))
+
+E. LLM usage & fallback
+
+- If `OPENAI_API_KEY` is configured, `llmService.generateAnswer()` calls OpenAI chat completion with system prompt instructing it to answer only from provided context.
+- If no API key, a local extractive answer selects the highest-scoring sentence(s) from retrieved chunks.
+(Refer: [backend/src/services/llmService.js](backend/src/services/llmService.js#L1-L300))
+
+8. How to extend this project (ideas)
+
+- Persist dense embeddings in a vector DB (Pinecone, Weaviate) for scaling and faster nearest-neighbor search.
+- Add authentication and per-user document isolation.
+- Add pagination and large-file streaming for very large documents.
+- Add tests for parsing edge cases and retrieval ranking.
+
+9. Troubleshooting & notes
+
+- If uploads fail: check backend logs; multer memory limits and `fileSize` config (currently 15 MB) might block large files.
+- If LLM calls fail: ensure `OPENAI_API_KEY` is valid and network egress allowed.
+- Database file created at `backend/data/app.db` — delete this file to reset.
+
+10. References (important files)
+
+- [backend/src/server.js](backend/src/server.js#L1-L120)
+- [backend/src/db.js](backend/src/db.js#L1-L200)
+- [backend/src/routes/upload.js](backend/src/routes/upload.js#L1-L300)
+- [backend/src/services/documentParser.js](backend/src/services/documentParser.js#L1-L300)
+- [backend/src/services/retrievalService.js](backend/src/services/retrievalService.js#L1-L350)
+- [backend/src/services/llmService.js](backend/src/services/llmService.js#L1-L300)
+- [frontend/src/App.jsx](frontend/src/App.jsx#L1-L120)
+- [frontend/src/components/FileUpload.jsx](frontend/src/components/FileUpload.jsx#L1-L200)
+- [frontend/src/components/ChatBox.jsx](frontend/src/components/ChatBox.jsx#L1-L200)
+
+---
+
+If you want, I can:
+- Export a richer Word `.docx` with nicer formatting (needs a small script),
+- Add a short README or PowerPoint slides for your submission,
+- Generate a brief one-page project summary for your report cover.

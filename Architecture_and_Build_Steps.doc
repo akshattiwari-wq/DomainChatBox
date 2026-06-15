@@ -1,0 +1,177 @@
+Document Chat Assistant — Architecture, Hierarchy & Step-by-Step Build
+
+Purpose
+
+This document describes the system hierarchy, the exact step-by-step process used to build the project, which technologies were used at each step, implementation notes, and example applications. Use this as a reproducible guide for future developers.
+
+1. System Hierarchy (components and responsibilities)
+
+- Frontend (React + Vite)
+  - Entry: [frontend/index.html](frontend/index.html#L1)
+  - App container: [frontend/src/App.jsx](frontend/src/App.jsx#L1-L120)
+  - Components:
+    - File upload UI: [frontend/src/components/FileUpload.jsx](frontend/src/components/FileUpload.jsx#L1-L200)
+    - Chat UI: [frontend/src/components/ChatBox.jsx](frontend/src/components/ChatBox.jsx#L1-L200)
+  - Responsibilities: user interactions, file selection, uploading to backend, showing chat history, sending questions.
+
+- Backend (Node.js + Express)
+  - Entry: [backend/src/server.js](backend/src/server.js#L1-L60)
+  - Routers:
+    - Upload: [backend/src/routes/upload.js](backend/src/routes/upload.js#L1-L200)
+    - Query: [backend/src/routes/query.js](backend/src/routes/query.js#L1-L200)
+    - Files: [backend/src/routes/files.js](backend/src/routes/files.js#L1-L200)
+  - Services:
+    - Document parsing: [backend/src/services/documentParser.js](backend/src/services/documentParser.js#L1-L300)
+    - Retrieval & chunking: [backend/src/services/retrievalService.js](backend/src/services/retrievalService.js#L1-L300)
+    - Embeddings wrapper: [backend/src/services/embeddingService.js](backend/src/services/embeddingService.js#L1-L200)
+    - LLM orchestration: [backend/src/services/llmService.js](backend/src/services/llmService.js#L1-L300)
+    - Structured answerer (CSV/table queries): [backend/src/services/structuredAnswerService.js](backend/src/services/structuredAnswerService.js#L1-L400)
+  - DB layer: [backend/src/db.js](backend/src/db.js#L1-L200)
+
+- Storage
+  - SQLite file: `backend/data/app.db` (created by `initDb()` in `db.js`)
+  - Tables: `documents`, `document_chunks`, `chats`
+
+2. Step-by-step Build & Tech Mapping
+
+Step 0 — Prerequisites
+- Tools: Node.js 18+, npm
+- Optional: OpenAI API key for embeddings and LLM responses
+- Files edited/created: none
+- How to verify: `node -v` and `npm -v`
+
+Step 1 — Initialize project structure (already present)
+- Tech: file system, Node.js project layout
+- Implementation: two folders `backend/` and `frontend/` with `package.json` files.
+- Why: separate concerns; backend exposes REST API, frontend is static SPA served by Vite.
+
+Step 2 — Backend basics (Express app & DB init)
+- Tech: Node.js, Express, sqlite, sqlite3, dotenv
+- Files: `backend/src/server.js`, `backend/src/db.js`
+- Implementation notes:
+  - `server.js` configures Express, JSON parsing, CORS, and mounts routers.
+  - `db.js` uses `sqlite` + `sqlite3` to open/create `data/app.db`, creates tables (`documents`, `document_chunks`, `chats`) and ensures columns via migrations.
+- Commands:
+
+  cd backend
+  npm install
+  npm run dev
+
+- Verification: server logs `Backend running on http://localhost:PORT` and file `backend/data/app.db` exists.
+
+Step 3 — File upload and parsing
+- Tech: `multer` (file handling), `pdf-parse` (PDF), `mammoth` (Word), `csv-parse` (CSV), Node Buffer APIs
+- Files: `backend/src/routes/upload.js`, `backend/src/services/documentParser.js`
+- Implementation:
+  - Frontend sends `FormData` with key `documents` to `/api/upload`.
+  - `multer.memoryStorage()` reads files into memory; `parseDocument()` extracts text and numeric metadata depending on extension.
+  - Store extracted text in `documents.content`, numeric metadata in `numeric_data`.
+- Important limits: upload size `15 MB` and max 3 files configured in `upload.js`.
+- Example snippet (simplified):
+
+  const parsed = await parseDocument(file);
+  const chunks = chunkDocument(parsed.text);
+  const embeddings = await generateEmbeddings(chunks.map(c => c.content));
+
+Step 4 — Chunking & retrieval prep
+- Tech: custom algorithm (term vectors), fallback sparse vectors, chunking rules
+- Files: `backend/src/services/retrievalService.js`
+- Implementation:
+  - Break documents into paragraphs; group into chunks under ~1600 characters.
+  - Compute a sparse term-frequency vector per chunk (tokenization + stop words removal).
+  - Provide `selectRelevantChunks(question, chunks)` that scores via overlap, sparse cosine similarity, and dense embedding cosine (if available).
+- Why: enables local retrieval even without OpenAI embeddings; good for small projects and deterministic behavior.
+
+Step 5 — Embeddings (optional, improves relevance)
+- Tech: OpenAI Embeddings API via `openai` npm package
+- Files: `backend/src/services/embeddingService.js`
+- Implementation:
+  - `generateEmbeddings(inputs)` calls OpenAI `embeddings.create` with `text-embedding-3-small` (configurable via `.env`).
+  - Store returned vectors as JSON in `document_chunks.embedding_json`.
+- Notes: if `OPENAI_API_KEY` not set, embeddings calls return `null` and the code falls back to sparse vectors.
+
+Step 6 — Answer generation & structured queries
+- Tech: OpenAI Chat Completions (optional) + local extractive answerer
+- Files: `backend/src/services/llmService.js`, `backend/src/services/structuredAnswerService.js`
+- Implementation:
+  - On a query: retrieve relevant chunks via `selectRelevantChunks()`.
+  - If OpenAI key present: call `client.chat.completions.create` with a system prompt instructing the model to answer only from the provided context.
+  - If no key: run `buildExtractiveAnswer()` that scores sentences for relevance and returns top sentence(s).
+  - `structuredAnswerService` inspects numeric/CSV-like data and handles aggregate queries (count, average), filtering, and unique value extraction.
+- Example: `answerQuestion(question, docs, chunks)` returns `{ status, answer, sources }`.
+
+Step 7 — Persisting chat history
+- Tech: SQLite
+- Files: `backend/src/routes/query.js`, `backend/src/routes/files.js`
+- Implementation: `QUERY` route inserts `user` and `assistant` messages into `chats` table. `files` route can clear chats when documents deleted.
+
+Step 8 — Frontend integration
+- Tech: React, fetch API, Vite
+- Files: `frontend/src/components/FileUpload.jsx`, `frontend/src/components/ChatBox.jsx`, `frontend/src/App.jsx`
+- Implementation:
+  - `FileUpload` handles `onChange` file selection, constructs `FormData`, POSTs to `/api/upload`, and updates uploaded files list.
+  - `ChatBox` fetches `/api/query/history` and displays messages; sends user questions to `/api/query`.
+  - UI state sync: after deleting all files or when files length changes, `historyVersion` increments to refresh chat history.
+- Run:
+
+  cd frontend
+  npm install
+  npm run dev
+
+Step 9 — Testing & verification
+- Manual tests:
+  - Upload sample PDF/CSV/TXT and ask direct questions found in the content.
+  - Verify that `chats` table stores messages and that files show in UI.
+- Suggestion: add automated unit tests around `documentParser` and `retrievalService`.
+
+Step 10 — Deployment considerations
+- Small project: run backend on Node host and serve frontend with static hosting or reverse-proxy.
+- For production scale:
+  - Move embeddings and vector search to a vector DB (Pinecone, Weaviate) for efficient NN queries.
+  - Add authentication and per-user document isolation.
+  - Offload file storage to S3 or blob storage for large files.
+
+3. Implementation Details per Tech (concise)
+
+- Express: lightweight REST API; routing split for clarity.
+- Multer: in-memory file buffering enabling fast processing without writing temp files.
+- pdf-parse / mammoth: reliable server-side text extraction for PDF/Word.
+- csv-parse: robust CSV parsing to convert to structured rows for `structuredAnswerService`.
+- SQLite: zero-config local persistence; good for demo and submission.
+- OpenAI client: used for embeddings and chat; code checks for `OPENAI_API_KEY` and falls back when absent.
+- React + Vite: fast frontend dev + optimized build; uses relative `/api` calls for simplicity.
+
+4. Example Applications and Use Cases
+
+- Research assistant: load academic papers and ask questions grounded in the PDFs.
+- Financial analysis: upload CSVs and ask for aggregates (averages, counts, trends) via structured queries.
+- Document QA for support teams: upload product manuals and let support agents query specifics.
+
+5. Troubleshooting and Tips
+
+- Increase `multer` limits for large files; consider streaming parsing for very large PDFs.
+- Reset DB: delete `backend/data/app.db` to start fresh.
+- If LLM errors: check environment variable `OPENAI_API_KEY` and model names in `.env`.
+- For reproducible dev environment, run backend and frontend in separate terminals.
+
+6. Next Steps & Enhancements
+
+- Add unit tests and CI for parsing and retrieval.
+- Add authentication and per-user document isolation.
+- Replace SQLite with production DB and a vector DB for embeddings.
+- Improve UI with progress indicators and chunk-preview for sources.
+
+7. References (key files)
+
+- [backend/src/server.js](backend/src/server.js#L1-L60)
+- [backend/src/db.js](backend/src/db.js#L1-L200)
+- [backend/src/routes/upload.js](backend/src/routes/upload.js#L1-L200)
+- [backend/src/services/documentParser.js](backend/src/services/documentParser.js#L1-L300)
+- [backend/src/services/retrievalService.js](backend/src/services/retrievalService.js#L1-L300)
+- [backend/src/services/llmService.js](backend/src/services/llmService.js#L1-L300)
+- [frontend/src/components/FileUpload.jsx](frontend/src/components/FileUpload.jsx#L1-L200)
+- [frontend/src/components/ChatBox.jsx](frontend/src/components/ChatBox.jsx#L1-L200)
+
+---
+
+If you want this exported as an actual `.docx` with headings/styles, I can generate one next and improve formatting.
