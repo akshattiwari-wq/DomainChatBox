@@ -1,4 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+const React = window.React;
+const h = React.createElement;
+const { useEffect, useRef, useState } = React;
+
+import { apiFetch } from '../lib/api.js';
 
 function FileUpload({ files, onFilesChange }) {
   const [error, setError] = useState(null);
@@ -24,7 +28,7 @@ function FileUpload({ files, onFilesChange }) {
     setError(null);
 
     try {
-      const response = await fetch('/api/upload', {
+      const response = await apiFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -48,7 +52,7 @@ function FileUpload({ files, onFilesChange }) {
     setError(null);
 
     try {
-      const response = await fetch(`/api/files/${fileId}`, { method: 'DELETE' });
+      const response = await apiFetch(`/api/files/${fileId}`, { method: 'DELETE' });
       const data = await response.json();
       if (response.ok) {
         onFilesChange(data.files || []);
@@ -62,7 +66,7 @@ function FileUpload({ files, onFilesChange }) {
 
   async function fetchStatus() {
     try {
-      const response = await fetch('/api/files/status');
+      const response = await apiFetch('/api/files/status');
       const data = await response.json();
       if (response.ok) {
         setStatus(data);
@@ -81,7 +85,7 @@ function FileUpload({ files, onFilesChange }) {
     setError(null);
 
     try {
-      const response = await fetch('/api/files', { method: 'DELETE' });
+      const response = await apiFetch('/api/files', { method: 'DELETE' });
       const data = await response.json();
       if (response.ok) {
         onFilesChange(data.files || []);
@@ -103,67 +107,80 @@ function FileUpload({ files, onFilesChange }) {
     fetchStatus();
   }, [files.length]);
 
-  return (
-    <div className="file-upload">
-      <div className="panel-heading">
-        <div>
-          <h2>Documents</h2>
-          <p>{files.length}/3 uploaded</p>
-        </div>
-        <div className="file-actions">
-          {files.length > 0 && (
-            <button className="ghost-button" type="button" onClick={handleDeleteAll}>
-              Delete all
-            </button>
-          )}
-          <button className="ghost-button" type="button" onClick={fetchStatus}>
-            Refresh status
-          </button>
-        </div>
-      </div>
-
-      <label className={`file-upload-label ${isUploading ? 'is-disabled' : ''}`}>
-        <span>{isUploading ? 'Uploading...' : 'Choose files'}</span>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept=".pdf,.doc,.docx,.csv,.txt,.md,.json"
-          onChange={handleUpload}
-          disabled={isUploading || files.length >= 3}
-        />
-      </label>
-
-      {error && <div className="upload-error">{error}</div>}
-      {status && (
-        <div className="file-status">
-          <span>
-            {status.fileCount} file{status.fileCount === 1 ? '' : 's'} uploaded, {status.availableSlots}{' '}
-            slot{status.availableSlots === 1 ? '' : 's'} available.
-          </span>
-          <span>{status.chatCount} chat message{status.chatCount === 1 ? '' : 's'} stored.</span>
-        </div>
-      )}
-      {statusError && <div className="upload-error">{statusError}</div>}
-
-      <div className="uploaded-file-list">
-        {files.length === 0 ? (
-          <p>No files uploaded yet. Use the button above to choose files and start a new chat.</p>
-        ) : (
-          files.map((file) => (
-            <div key={file.id} className="uploaded-file-item">
-              <div>
-                <span>{file.filename}</span>
-                {file.size_bytes && <small>{formatBytes(file.size_bytes)}</small>}
-              </div>
-              <button type="button" onClick={() => handleDelete(file.id)}>
-                Delete
-              </button>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
+  return h(
+    'div',
+    { className: 'file-upload' },
+    h(
+      'div',
+      { className: 'panel-heading' },
+      h('div', null, h('h2', null, 'Documents'), h('p', null, `${files.length}/3 uploaded`)),
+      h(
+        'div',
+        { className: 'file-actions' },
+        files.length > 0
+          ? h(
+              'button',
+              { className: 'ghost-button', type: 'button', onClick: handleDeleteAll },
+              'Delete all'
+            )
+          : null,
+        h('button', { className: 'ghost-button', type: 'button', onClick: fetchStatus }, 'Refresh status')
+      )
+    ),
+    h(
+      'label',
+      { className: `file-upload-label ${isUploading ? 'is-disabled' : ''}` },
+      h('span', null, isUploading ? 'Uploading...' : 'Choose files'),
+      h('input', {
+        ref: inputRef,
+        type: 'file',
+        multiple: true,
+        accept: '.pdf,.doc,.docx,.csv,.txt,.md,.json',
+        onChange: handleUpload,
+        disabled: isUploading || files.length >= 3,
+      })
+    ),
+    error ? h('div', { className: 'upload-error' }, error) : null,
+    status
+      ? h(
+          'div',
+          { className: 'file-status' },
+          h(
+            'span',
+            null,
+            `${status.fileCount} file${status.fileCount === 1 ? '' : 's'} uploaded, ${status.availableSlots} slot${status.availableSlots === 1 ? '' : 's'} available.`
+          ),
+          h(
+            'span',
+            null,
+            `${status.chatCount} chat message${status.chatCount === 1 ? '' : 's'} stored.`
+          )
+        )
+      : null,
+    statusError ? h('div', { className: 'upload-error' }, statusError) : null,
+    h(
+      'div',
+      { className: 'uploaded-file-list' },
+      files.length === 0
+        ? h('p', null, 'No files uploaded yet. Use the button above to choose files and start a new chat.')
+        : files.map((file) =>
+            h(
+              'div',
+              { key: file.id, className: 'uploaded-file-item' },
+              h(
+                'div',
+                null,
+                h('span', null, file.filename),
+                file.size_bytes ? h('small', null, formatBytes(file.size_bytes)) : null
+              ),
+              h(
+                'button',
+                { type: 'button', onClick: () => handleDelete(file.id) },
+                'Delete'
+              )
+            )
+          )
+    )
   );
 }
 

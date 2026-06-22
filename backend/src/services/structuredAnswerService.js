@@ -321,15 +321,18 @@ function formatStructuredAnswer(question, rows, targetColumns, filters) {
   const rowLimit = asksHistory || asksForRecordDetails(question) ? 8 : 1;
   const selectedRows = rows.slice(0, rowLimit);
   const prefix = filters.length > 0 ? `For ${describeFilters(filters)}, ` : '';
+  const isCleanResponseOnly = targetColumns.length === 1 && targetColumns[0] === 'clean_response';
 
   if (selectedRows.length === 1) {
     const row = selectedRows[0];
-    return `${prefix}${formatTargets(row, targetColumns)}. Source: ${row.filename}, row ${row.rowIndex}.`;
+    const answerText = formatTargets(row, targetColumns, { omitLabels: isCleanResponseOnly });
+    return isCleanResponseOnly ? `${prefix}${answerText}` : `${prefix}${answerText}. Source: ${row.filename}, row ${row.rowIndex}.`;
   }
 
-  const values = selectedRows.map(
-    (row) => `row ${row.rowIndex}: ${formatTargets(row, targetColumns)}`
-  );
+  const values = selectedRows.map((row) => {
+    const answerText = formatTargets(row, targetColumns, { omitLabels: isCleanResponseOnly });
+    return isCleanResponseOnly ? answerText : `row ${row.rowIndex}: ${answerText}`;
+  });
   const remainder = rows.length > selectedRows.length ? ` Showing ${selectedRows.length} of ${rows.length} matches.` : '';
 
   return `${prefix}${values.join('; ')}.${remainder}`;
@@ -443,9 +446,13 @@ function aggregateLabel(aggregate) {
   }[aggregate];
 }
 
-function formatTargets(row, targetColumns) {
+function formatTargets(row, targetColumns, options = {}) {
+  const { omitLabels = false } = options;
   return targetColumns
-    .map((column) => `${humanizeColumn(column)} is ${formatSentenceValue(row.data[column])}`)
+    .map((column) => {
+      const valueText = formatSentenceValue(row.data[column]);
+      return omitLabels ? valueText : `${humanizeColumn(column)} is ${valueText}`;
+    })
     .join(', ');
 }
 

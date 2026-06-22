@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+const React = window.React;
+const h = React.createElement;
+const { useEffect, useState } = React;
 
-function ChatBox({ files, historyVersion }) {
+import { apiFetch } from '../lib/api.js';
+
+function ChatBox({ files, filesVersion }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [error, setError] = useState(null);
@@ -13,14 +17,25 @@ function ChatBox({ files, historyVersion }) {
       return;
     }
 
-    fetch('/api/query/history')
-      .then((res) => res.json())
-      .then((data) => {
-        setMessages(data.messages || []);
-        setError(null);
-      })
-      .catch(() => setError('Unable to load chat history.'));
-  }, [historyVersion, files.length]);
+    refreshHistory();
+  }, [filesVersion, files.length]);
+
+  async function refreshHistory() {
+    try {
+      const response = await apiFetch('/api/query/history');
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Unable to load chat history.');
+      }
+
+      setMessages(data.messages || []);
+      setError(null);
+    } catch {
+      setMessages([]);
+      setError('Unable to load chat history. Check that the backend is running.');
+    }
+  }
 
   async function sendMessage(event) {
     event.preventDefault();
@@ -35,7 +50,7 @@ function ChatBox({ files, historyVersion }) {
     setIsSending(true);
 
     try {
-      const response = await fetch('/api/query', {
+      const response = await apiFetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
@@ -49,10 +64,7 @@ function ChatBox({ files, historyVersion }) {
         return;
       }
 
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: data.answer, status: data.status },
-      ]);
+      await refreshHistory();
     } catch {
       setError('Unable to process question. Check that the backend is running.');
     } finally {
@@ -66,7 +78,7 @@ function ChatBox({ files, historyVersion }) {
     setError(null);
 
     try {
-      const response = await fetch('/api/query/history', {
+      const response = await apiFetch('/api/query/history', {
         method: 'DELETE',
       });
       const data = await response.json();
@@ -83,45 +95,58 @@ function ChatBox({ files, historyVersion }) {
     }
   }
 
-  return (
-    <div className="chat-box">
-      <div className="panel-heading">
-        <div>
-          <h2>Chat</h2>
-          <p>{messages.length} messages</p>
-        </div>
-        <button className="ghost-button" type="button" onClick={handleClearHistory} disabled={isClearing || messages.length === 0}>
-          {isClearing ? 'Clearing...' : 'Start new chat'}
-        </button>
-      </div>
-
-      <div className="chat-history">
-        {messages.map((message, index) => (
-          <div key={index} className={`chat-message ${message.role} ${message.status || ''}`}>
-            <span className="role">{message.role}</span>
-            <span>{message.content || message.message}</span>
-          </div>
-        ))}
-      </div>
-
-      {error && <div className="chat-error">{error}</div>}
-      {!files.length && (
-        <div className="chat-hint">Upload a document to start a new chat and ask questions from your files.</div>
-      )}
-
-      <form className="chat-input-row" onSubmit={sendMessage}>
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={files.length ? 'Ask a question about the uploaded documents' : 'Upload documents first'}
-          disabled={isSending || files.length === 0}
-        />
-        <button type="submit" disabled={isSending || files.length === 0}>
-          {isSending ? 'Sending' : 'Send'}
-        </button>
-      </form>
-    </div>
+  return h(
+    'div',
+    { className: 'chat-box' },
+    h(
+      'div',
+      { className: 'panel-heading' },
+      h('div', null, h('h2', null, 'Chat'), h('p', null, `${messages.length} messages`)),
+      h(
+        'button',
+        {
+          className: 'ghost-button',
+          type: 'button',
+          onClick: handleClearHistory,
+          disabled: isClearing || messages.length === 0,
+        },
+        isClearing ? 'Clearing...' : 'Start new chat'
+      )
+    ),
+    h(
+      'div',
+      { className: 'chat-history' },
+      messages.map((message, index) =>
+        h(
+          'div',
+          { key: index, className: `chat-message ${message.role} ${message.status || ''}` },
+          h('span', { className: 'role' }, message.role),
+          h('span', null, message.content || message.message)
+        )
+      )
+    ),
+    error ? h('div', { className: 'chat-error' }, error) : null,
+    !files.length
+      ? h(
+          'div',
+          { className: 'chat-hint' },
+          'Upload a document to start a new chat and ask questions from your files.'
+        )
+      : null,
+    h(
+      'form',
+      { className: 'chat-input-row', onSubmit: sendMessage },
+      h('input', {
+        type: 'text',
+        value: input,
+        onChange: (e) => setInput(e.target.value),
+        placeholder: files.length
+          ? 'Ask a question about the uploaded documents'
+          : 'Upload documents first',
+        disabled: isSending || files.length === 0,
+      }),
+      h('button', { type: 'submit', disabled: isSending || files.length === 0 }, isSending ? 'Sending' : 'Send')
+    )
   );
 }
 
